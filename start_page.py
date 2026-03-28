@@ -1,5 +1,6 @@
 import streamlit as st
 
+# Configure page
 st.set_page_config(
     page_title="Equalize NYC",
     page_icon="⚖️",
@@ -91,6 +92,7 @@ st.markdown("""
             opacity: 0;
         }
     }
+
 
     
     /* CTA Button styling */
@@ -185,7 +187,6 @@ function updateText() {
     }
 }
 
-// Force immediate update and then set interval
 if (carouselEl) {
     updateText();
     setInterval(updateText, 3000);
@@ -209,12 +210,9 @@ with col2:
         # Navigate to app page
         st.switch_page("pages/app_page.py")
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 # Footer section
 st.markdown("""
 <div style="text-align: center; margin-top: 4rem; color: #707070; font-size: 0.9rem;">
     <p>AI-powered civic advocate for small businesses fighting municipal violations in NYC.</p>
 </div>
 """, unsafe_allow_html=True)
-
