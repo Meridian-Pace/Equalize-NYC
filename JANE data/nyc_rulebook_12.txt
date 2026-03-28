@@ -1,0 +1,64 @@
+
+============================================================
+       EQUALIZE NYC: MASTER ADVOCACY RULEBOOK (2026)
+============================================================
+Focus: Protecting Households from High-Impact Automated Decisions
+Grounding: NYC Algorithmic Tools Compliance Report (LL35) & 311 Data
+------------------------------------------------------------
+
+[SECTION 1: ALGORITHMIC TOOLS (AUTOMATED DECISIONS)]
+
+1. TRIGGER: Repeat Maltreatment (RM) model (ACS)
+   - CONTEXT: Predicts likelihood of future neglect/abuse reports.
+   - RIGHT: You have the right to legal representation during conferences. 
+   - ACTION: Ask if your case was flagged by the "RM Model" and request a human review.
+
+2. TRIGGER: Housing Prioritization (ACS)
+   - CONTEXT: Algorithm decides voucher priority.
+   - ACTION: If denied, submit a "Hardship Declaration" to appeal the tool's ranking.
+
+3. TRIGGER: Severe Harm Predictive Model (ACS)
+   - CONTEXT: Automates the "risk level" of a family's living situation.
+   - ACTION: Request the "Input Data" used to ensure no outdated reports were included.
+
+4. TRIGGER: Homebase Risk Assessment Questionnaire (RAQ) (DSS/DHS)
+   - CONTEXT: Determines homelessness prevention eligibility.
+   - RIGHT: If denied, appeal based on "Recent Income Loss" which the tool may miss.
+
+5. TRIGGER: STABLE (Shelter Capacity Tool)
+   - CONTEXT: Allocates shelter beds based on predicted availability.
+   - ACTION: Request a "Proximity Review" based on your children's current school.
+
+6. TRIGGER: MySchools Admission Match (DOE)
+   - CONTEXT: Software decides school placements.
+   - RIGHT: You have the right to see your "Waitlist Number" and the specific data used.
+
+7. TRIGGER: Eureka! Chatbot (DOE)
+   - RULE: Automated info is NOT legally binding. 
+   - ACTION: If the chatbot gives wrong info, use a screenshot to contest deadlines.
+
+8. TRIGGER: Adult Risk of IP/ED Utilization Score (Health + Hospitals)
+   - CONTEXT: Predicts frequency of emergency care needs.
+   - ACTION: Ask a Patient Advocate to review your "Utilization Score" for bias.
+
+9. TRIGGER: Route Automation / AIMS (DCWP)
+   - CONTEXT: AI chooses which small businesses or vendors to inspect.
+   - ACTION: Check for the "Cure Period" (14 days) to fix violations without a fine.
+
+10. TRIGGER: TargetSmart / Splink (DSS)
+    - CONTEXT: Population identification for social service outreach.
+    - ACTION: Check "Opt-Out" rules for automated data collection.
+
+[SECTION 2: GENERAL HOUSEHOLD SURVIVAL (NON-ALGORITHMIC)]
+
+11. TRIGGER: Code 40 (Fire Hydrant Parking)
+    - DEFENSE: Must be 15 feet away. If 16ft+, take a photo with a tape measure.
+    - ACTION: Submit photo evidence to the DOF website to dismiss the $115 fine.
+
+12. TRIGGER: Payment via Zelle, Bitcoin, or Gift Cards
+    - WARNING: NYC agencies NEVER accept these for fines.
+    - ACTION: This is a scam. Hang up and report to 311 immediately.
+
+------------------------------------------------------------
+END OF RULEBOOK
+============================================================
