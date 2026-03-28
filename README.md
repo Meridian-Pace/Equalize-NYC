@@ -106,11 +106,11 @@ Equalize-NYC/
 
 ## License
 
-Built for the Stack the Future 2026 Hackathon.
+Built for the NYC Build With AI Hackathon 2026 Hackathon.
 
 ## Team
 
-**Meridian Pace** — Stack the Future 2026
+**Meridian Pace** — NYC Build With AI Hackathon 2026
 
 - Eric Kouperman — eric.kouperman@gmail.com
 - Jacqueline Wong — winnie.yun.wong@gmail.com
