@@ -3,13 +3,18 @@ import time
 import queue
 import asyncio
 import threading
-from io import BytesIO
-import io
 
 # Must import backend modules
 from ai_engine import CivicAI
 from live_engine import CivicAILive
 from data_manager import get_context_block
+
+# ── Audio constants (real-time mic/speaker via sounddevice) ───────────────────
+MIC_RATE     = 16_000
+SPEAKER_RATE = 24_000
+CHANNELS     = 1
+DTYPE        = "int16"
+MIC_CHUNK    = 1_024
 
 # Configure page
 st.set_page_config(
@@ -305,85 +310,143 @@ if "live_running" not in st.session_state:
     st.session_state.live_running = False
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LIVE SESSION HELPERS
+# LIVE SESSION HELPERS  (real-time mic → API → speaker)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _send_loop(
     engine: CivicAILive,
-    input_q: queue.Queue,
+    mic_async_q: asyncio.Queue,
+    image_q: queue.Queue,
     stop_event: threading.Event,
 ) -> None:
-    """Drain the input queue and forward audio/image bytes to the live session."""
+    """Stream mic audio continuously; also forward any camera image that arrives."""
     while not stop_event.is_set():
+        # Drain any queued camera image first
         try:
-            item = input_q.get_nowait()
-            if item["type"] == "audio":
-                await engine.send_audio(item["data"])
-            elif item["type"] == "image":
-                await engine.send_image(item["data"])
+            item = image_q.get_nowait()
+            await engine.send_image(item["data"])
         except queue.Empty:
-            await asyncio.sleep(0.05)
+            pass
+        # Send next mic chunk
+        try:
+            chunk = mic_async_q.get_nowait()
+            if chunk is None:
+                return
+            await engine.send_audio(chunk)
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.02)
 
 
 async def _receive_loop(
     engine: CivicAILive,
     output_q: queue.Queue,
+    speaker_q: queue.Queue,
     stop_event: threading.Event,
 ) -> None:
-    """Forward every streamed chunk from the live session to the output queue."""
+    """Route audio chunks to the speaker queue; push transcription text to output_q."""
     async for chunk in engine.receive():
         if stop_event.is_set():
             break
-        output_q.put(chunk)
+        if isinstance(chunk, bytes):
+            speaker_q.put(chunk)
+        elif isinstance(chunk, str) and chunk:
+            output_q.put(chunk)
 
 
 async def _live_loop(
     engine: CivicAILive,
-    input_q: queue.Queue,
+    mic_async_q: asyncio.Queue,
+    image_q: queue.Queue,
     output_q: queue.Queue,
+    speaker_q: queue.Queue,
     stop_event: threading.Event,
 ) -> None:
     async with engine:
         await asyncio.gather(
-            _send_loop(engine, input_q, stop_event),
-            _receive_loop(engine, output_q, stop_event),
+            _send_loop(engine, mic_async_q, image_q, stop_event),
+            _receive_loop(engine, output_q, speaker_q, stop_event),
         )
 
 
 def _run_live_thread(
-    input_q: queue.Queue,
+    image_q: queue.Queue,
     output_q: queue.Queue,
     stop_event: threading.Event,
+    mute_event: threading.Event,
 ) -> None:
-    """Entry point for the background thread — owns a dedicated event loop."""
+    """Owns its own event loop, mic stream, and speaker stream."""
+    try:
+        import sounddevice as sd
+        import numpy as np
+    except ImportError:
+        output_q.put("[sounddevice not installed — run: pip install sounddevice numpy]")
+        return
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    mic_async_q: asyncio.Queue = asyncio.Queue()
+    speaker_q: queue.Queue = queue.Queue()
+
+    def _mic_callback(indata: "np.ndarray", frames, time_info, status) -> None:
+        if not stop_event.is_set():
+            loop.call_soon_threadsafe(mic_async_q.put_nowait, indata.tobytes())
+
+    def _speaker_worker() -> None:
+        try:
+            with sd.RawOutputStream(
+                samplerate=SPEAKER_RATE, channels=CHANNELS, dtype=DTYPE
+            ) as stream:
+                while not stop_event.is_set():
+                    try:
+                        chunk = speaker_q.get(timeout=0.5)
+                        if chunk is None:
+                            break
+                        if not mute_event.is_set():
+                            stream.write(chunk)
+                    except queue.Empty:
+                        pass
+        except Exception:
+            pass
+
+    spk_thread = threading.Thread(target=_speaker_worker, daemon=True)
+    spk_thread.start()
+
     engine = CivicAILive()
     try:
-        loop.run_until_complete(
-            _live_loop(engine, input_q, output_q, stop_event)
-        )
+        with sd.InputStream(
+            samplerate=MIC_RATE, channels=CHANNELS, dtype=DTYPE,
+            blocksize=MIC_CHUNK, callback=_mic_callback,
+        ):
+            loop.run_until_complete(
+                _live_loop(engine, mic_async_q, image_q, output_q, speaker_q, stop_event)
+            )
+    except Exception as exc:
+        output_q.put(f"[session error: {exc}]")
     finally:
+        stop_event.set()
+        speaker_q.put(None)
+        spk_thread.join(timeout=2)
         loop.close()
 
 
 def _start_live_session() -> None:
-    input_q: queue.Queue = queue.Queue()
-    output_q: queue.Queue = queue.Queue()
-    stop_event = threading.Event()
+    image_q: queue.Queue  = queue.Queue()   # camera frames → live engine
+    output_q: queue.Queue = queue.Queue()   # transcription text → UI
+    stop_event  = threading.Event()
+    mute_event  = threading.Event()         # set = muted
     thread = threading.Thread(
         target=_run_live_thread,
-        args=(input_q, output_q, stop_event),
+        args=(image_q, output_q, stop_event, mute_event),
         daemon=True,
     )
     thread.start()
-    st.session_state.live_running = True
-    st.session_state.live_input_q = input_q
-    st.session_state.live_output_q = output_q
-    st.session_state.live_stop_event = stop_event
-    st.session_state.live_thread = thread
-    st.session_state.live_response = ""
-    st.session_state.live_last_audio_id = None
+    st.session_state.live_running       = True
+    st.session_state.live_input_q       = image_q
+    st.session_state.live_output_q      = output_q
+    st.session_state.live_stop_event    = stop_event
+    st.session_state.live_mute_event    = mute_event
+    st.session_state.live_thread        = thread
+    st.session_state.transcript         = ""
     st.session_state.live_last_frame_id = None
 
 
@@ -393,14 +456,13 @@ def _stop_live_session() -> None:
     st.session_state.live_running = False
     for key in (
         "live_input_q", "live_output_q", "live_stop_event",
-        "live_thread", "live_response",
-        "live_last_audio_id", "live_last_frame_id",
+        "live_mute_event", "live_thread", "live_last_frame_id",
     ):
         st.session_state.pop(key, None)
 
 
 def _drain_output_queue() -> str:
-    """Pull all pending chunks from the output queue into the response string."""
+    """Pull all pending transcription chunks from the output queue."""
     output_q: queue.Queue = st.session_state.live_output_q
     new_text = ""
     while True:
@@ -411,6 +473,10 @@ def _drain_output_queue() -> str:
         except queue.Empty:
             break
     return new_text
+
+# ── AUTO-START: open live session the moment this page loads ──────────────────
+if not st.session_state.live_running:
+    _start_live_session()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LANGUAGE MAPPING
@@ -463,7 +529,15 @@ with col2:
 st.markdown('</div>', unsafe_allow_html=True)
 
 if captured is not None:
-    st.session_state.captured_image = captured.getvalue()
+    frame_id = id(captured)
+    if frame_id != st.session_state.get("live_last_frame_id"):
+        st.session_state.live_last_frame_id = frame_id
+        st.session_state.captured_image = captured.getvalue()
+        # Push image into the live session so the AI can see it
+        if st.session_state.live_running:
+            st.session_state.live_input_q.put(
+                {"type": "image", "data": st.session_state.captured_image}
+            )
 
 # Display captured image if available
 if st.session_state.captured_image:
@@ -515,53 +589,43 @@ else:
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="response-label">Live Transcript</div>', unsafe_allow_html=True)
 
-# Live Session Controls
-col1, col2 = st.columns(2)
-
+# ── Status + Stop control ─────────────────────────────────────────────────────
+col1, col2 = st.columns([3, 1])
 with col1:
-    if not st.session_state.live_running:
-        if st.button("▶️ Start Live", use_container_width=True, key="start_live"):
-            _start_live_session()
-            st.rerun()
-    else:
-        st.markdown('<span class="status-badge status-recording">● Recording</span>', unsafe_allow_html=True)
-
+    if st.session_state.live_running:
+        st.markdown('<span class="status-badge status-recording">● Listening</span>', unsafe_allow_html=True)
 with col2:
     if st.session_state.live_running:
-        if st.button("⏹ Stop Live", use_container_width=True, key="stop_live"):
+        if st.button("⏹", key="stop_live", help="Stop session"):
             _stop_live_session()
             st.rerun()
 
-# Display live session if running
+# ── AI subtitle / transcript display ─────────────────────────────────────────
 if st.session_state.live_running:
-    st.markdown('<hr style="background: #2a2a2a; border: none; height: 1px; margin: 1rem 0;">', unsafe_allow_html=True)
-    
-    # Transcript display
     transcript_container = st.empty()
-    
-    # Drain queue and update transcript
+
     new_text = _drain_output_queue()
     if new_text:
         st.session_state.transcript = st.session_state.get("transcript", "") + new_text
-    
+
     if st.session_state.transcript:
         transcript_container.markdown(
             f'<div class="transcript-box"><div class="transcription-live">{st.session_state.transcript}</div></div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
     else:
         transcript_container.markdown(
-            '<div class="transcript-box" style="color: #707070;">Waiting for speech...</div>',
-            unsafe_allow_html=True
+            '<div class="transcript-box" style="color: #707070;">Listening — speak or take a photo...</div>',
+            unsafe_allow_html=True,
         )
-    
-    # Auto-refresh
+
+    # Auto-refresh to pull new transcription chunks
     time.sleep(0.5)
     st.rerun()
 else:
     st.markdown(
-        '<div class="transcript-box" style="color: #707070; border-left-color: #2a2a2a;">Press "Start Live" to begin live session</div>',
-        unsafe_allow_html=True
+        '<div class="transcript-box" style="color: #707070; border-left-color: #2a2a2a;">Session stopped.</div>',
+        unsafe_allow_html=True,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -573,16 +637,26 @@ st.markdown('<div class="mute-button-container">', unsafe_allow_html=True)
 
 col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
-    mute_label = "🔇" if st.session_state.muted else "🔊"
+    # Derive mute state from the live_mute_event when session is running
+    mute_event = st.session_state.get("live_mute_event")
+    is_muted = mute_event.is_set() if mute_event else st.session_state.muted
+    mute_label = "🔇" if is_muted else "🔊"
     if st.button(mute_label, key="mute_toggle", help="Toggle audio output"):
-        st.session_state.muted = not st.session_state.muted
+        if mute_event:
+            if mute_event.is_set():
+                mute_event.clear()
+            else:
+                mute_event.set()
+        st.session_state.muted = not is_muted
         st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
 
 # Mute status
-status_text = "Audio Muted" if st.session_state.muted else "Audio Enabled"
-status_class = "status-recording" if not st.session_state.muted else "status-waiting"
+is_muted = st.session_state.get("live_mute_event", None)
+is_muted = is_muted.is_set() if is_muted else st.session_state.muted
+status_text = "Audio Muted" if is_muted else "Audio Enabled"
+status_class = "status-recording" if not is_muted else "status-waiting"
 st.markdown(f'<div style="text-align: center;"><span class="status-badge {status_class}">{status_text}</span></div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
