@@ -1,18 +1,18 @@
 import os
-import vertexai
-from vertexai.generative_models import GenerativeModel
+from google import genai # This is the new 2026 SDK
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credentials.json"
 PROJECT_ID = "gcloud-hackathon-yaueo3935unlm"
 
 try:
-    vertexai.init(project=PROJECT_ID, location="global")
-    model = GenerativeModel("gemini-3-flash-preview") 
-    
-    response = model.generate_content("Ping!")
-    print("-" * 30)
-    print(f"SUCCESS: {response.text}")
-    print("-" * 30)
+    # This Client handles the 'global' routing much better for Gemini 3
+    client = genai.Client(vertexai=True, project=PROJECT_ID, location="global")
+
+    response = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        contents="Ping!"
+    )
+    print(f"✅ SUCCESS: {response.text}")
 except Exception as e:
-    print(f"❌ ERROR: {e}")
-# dont forget to run with python test_auth.py - alex
+    print(f"❌ STILL FAILING: {e}")
+    print("TIP: If it says 'location unsupported', try location='us-east4'")
