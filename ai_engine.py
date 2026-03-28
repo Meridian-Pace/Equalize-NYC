@@ -1,14 +1,16 @@
+import os
 import google.genai as genai
 from google.genai import types
-import os
+import config
 
 class CivicAI:
-    def __init__(self, credentials_path: str = "credentials.json"):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+    def __init__(self):
+        config.validate()
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = config.CREDENTIALS_PATH
         self.client = genai.Client(
             vertexai=True,
-            project=os.environ.get("GCP_PROJECT_ID"),
-            location="global",
+            project=config.PROJECT_ID,
+            location=config.LOCATION,
         )
         self.model = "gemini-3-flash-preview"
 
@@ -27,7 +29,7 @@ If the city issued a fine, assume it can be challenged until proven otherwise.""
 
         if context_text:
             parts.append(
-                types.Part.from_text(
+                types.Part.from_text(text=
                     f"NYC Compliance Rules Context:\n{context_text}"
                 )
             )
@@ -38,7 +40,7 @@ If the city issued a fine, assume it can be challenged until proven otherwise.""
             )
 
         user_query = voice_text or "Analyze this violation and tell me how to fight it."
-        parts.append(types.Part.from_text(f"User Question: {user_query}"))
+        parts.append(types.Part.from_text(text=f"User Question: {user_query}"))
 
         response = self.client.models.generate_content(
             model=self.model,
