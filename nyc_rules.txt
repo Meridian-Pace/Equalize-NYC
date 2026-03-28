@@ -1,0 +1,71 @@
+Equalize NYC - NYC DCWP Guidance Context
+Scope: General Retail + Sidewalk Obstruction
+Format: Rule vs. Violation logic for AI analysis
+
+Section A - General Retail Compliance
+
+Rule GR-1: Price Display
+Rule: Each item offered for sale should have a clear and visible price so a customer can understand cost before purchase.
+Violation Signal: Missing price sticker, hidden pricing, or shelf and register prices that do not match without explanation.
+Civic Advocate Check: Ask whether the issue is isolated or systemic and whether corrected labels were posted promptly.
+
+Rule GR-2: Receipts and Transaction Transparency
+Rule: Point-of-sale transactions should provide a clear receipt with itemized charges and applicable taxes/fees.
+Violation Signal: No receipt offered, unreadable receipt, or unexplained additional charges.
+Civic Advocate Check: Distinguish software malfunction from intentional overcharge; verify whether corrected receipts are now issued.
+
+Rule GR-3: Scales and Measurement Claims
+Rule: Goods sold by weight/measure should use valid measuring devices and consistent labeling.
+Violation Signal: Device appears uncalibrated, package quantity inconsistent with label, or price per unit not clear.
+Civic Advocate Check: Determine if calibration records exist and whether discrepancy caused consumer harm.
+
+Rule GR-4: Consumer Disclosures
+Rule: Return/refund limits and key sales conditions should be clearly posted where customers can reasonably see them.
+Violation Signal: No policy posting, conflicting policies, or selective disclosure after purchase.
+Civic Advocate Check: Evaluate sign visibility, language clarity, and whether staff training was documented.
+
+Rule GR-5: Safety and Access in Customer Areas
+Rule: Retail floor should be maintained in a reasonably safe and accessible condition for normal customer movement.
+Violation Signal: Narrow blocked aisles, unstable displays, cords/boxes in walk path, or emergency path obstructions.
+Civic Advocate Check: Identify temporary stocking vs. persistent obstruction and whether immediate correction occurred.
+
+Section B - Sidewalk Obstruction Compliance
+
+Rule SO-1: Clear Pedestrian Path
+Rule: Sidewalk space used by business activity should not block ordinary pedestrian flow.
+Violation Signal: Displays, signs, storage, or queues reduce walkway movement to a congested or unsafe condition.
+Civic Advocate Check: Measure practical clearance at incident time and whether obstruction was promptly removed.
+
+Rule SO-2: Merchandise and Fixtures Placement
+Rule: Exterior placement of goods/fixtures should follow local allowance limits and not spill beyond permitted area.
+Violation Signal: Racks/tables/chairs extend into pedestrian corridor, curb access points, or building egress routes.
+Civic Advocate Check: Confirm whether placement was temporary, supervised, and corrected on notice.
+
+Rule SO-3: Delivery and Loading Spillover
+Rule: Delivery operations should be managed so carts/packages do not create prolonged sidewalk blockage.
+Violation Signal: Boxes or hand trucks left unattended in sidewalk path during business hours.
+Civic Advocate Check: Compare duration of blockage versus active loading; document staffing and mitigation actions.
+
+Rule SO-4: Signage and Advertising on Sidewalk
+Rule: Freestanding signs should not create tripping risk or materially interfere with accessible passage.
+Violation Signal: Sign bases protrude into path, unstable signs, or signs clustered in high-foot-traffic choke points.
+Civic Advocate Check: Note weather/wind factors, placement intent, and immediate repositioning/removal.
+
+Rule SO-5: Entrances, Ramps, and Fire Access
+Rule: Business operations should not obstruct entrances, ramps, hydrant zones, or emergency access paths.
+Violation Signal: Goods or equipment staged near doorway/ramp/hydrant that impede emergency or accessibility use.
+Civic Advocate Check: Prioritize evidence of quick remediation and absence of repeat incidents.
+
+Section C - Rule-to-Violation Decision Pattern
+
+Step 1: Identify observed condition from image/user statement.
+Step 2: Match condition to the closest Rule ID (GR-* or SO-*).
+Step 3: Determine Violation Signal strength: None, Possible, Likely.
+Step 4: State corrective action for immediate compliance.
+Step 5: Provide defense/mitigation factors (prompt correction, temporary condition, unclear signage, no consumer harm).
+
+Output Preference for AI
+- Cite Rule IDs explicitly when making claims.
+- Separate "What likely violated" from "How to fix now".
+- If evidence is weak, say uncertain and request better photo/context.
+- Do not invent legal citations beyond this context unless marked as external assumption.

@@ -15,6 +15,11 @@ def load_rules() -> str:
         return f.read()
 
 
+def load_nyc_rules() -> str:
+    """Canonical interface: return nyc_rules.txt as a single string."""
+    return load_rules()
+
+
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS) -> list[str]:
     """Split text into chunks only when it exceeds chunk_size characters."""
     if len(text) <= chunk_size:
@@ -24,6 +29,6 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS) -> list[str]:
 
 def get_context_block() -> str:
     """Return rules as a single block; falls back to first chunk if enormous."""
-    rules = load_rules()
+    rules = load_nyc_rules()
     chunks = chunk_text(rules)
     return chunks[0] if chunks else ""
