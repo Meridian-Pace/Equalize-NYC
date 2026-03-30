@@ -15,7 +15,7 @@ Equalize NYC puts a predatory fine advocate in your pocket. It:
 
 ## Features
 
-- **Check Compliance tab** — upload a photo of a fine or violation notice, record your question, and get a detailed written legal defense
+- **Check Compliance tab** — Upload a photo of a fine or violation notice, record your question, and get a detailed written legal defense
 - **Live Session tab** — open a live voice session directly in the browser (Streamlit audio)
 - **Terminal voice chat** (`chat_live.py`) — full duplex mic-to-speaker conversation with barge-in support and auto-reconnect
 - **NYC Rules context** — drop a `nyc_rules.txt` file in the project root and the AI will cite specific rules in every response
@@ -106,13 +106,13 @@ Equalize-NYC/
 
 ## License
 
-Built for the Stack the Future 2026 Hackathon.
+Built for the NYC Build With AI Hackathon 2026 Hackathon.
 
 ## Team
 
-**Meridian Pace** — Stack the Future 2026
+**Meridian Pace** — NYC Build With AI Hackathon 2026
 
 - Eric Kouperman — eric.kouperman@gmail.com
 - Jacqueline Wong — winnie.yun.wong@gmail.com
 - Nyosha Homicil — nyoshahomicil@gmail.com
-- Alexander Westfal — alexcwestfal@gmail.com
+- Alexander Westfal — awemploymentprocess@gmail.com
