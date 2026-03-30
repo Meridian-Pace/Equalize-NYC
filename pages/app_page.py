@@ -1,13 +1,15 @@
 import streamlit as st
-import time
 import queue
 import asyncio
 import threading
+import base64 as _base64
+import uuid as _uuid
 
 # Must import backend modules
-from ai_engine import CivicAI
 from live_engine import CivicAILive
+from ai_engine import CivicAI
 from data_manager import get_context_block
+from components.high_res_camera import high_res_camera as _high_res_camera
 
 # ── Audio constants (real-time mic/speaker via sounddevice) ───────────────────
 MIC_RATE     = 16_000
@@ -15,6 +17,26 @@ SPEAKER_RATE = 24_000
 CHANNELS     = 1
 DTYPE        = "int16"
 MIC_CHUNK    = 1_024
+
+# ── Per-session registries (process-level store, keyed by browser session ID) ─
+@st.cache_resource
+def _all_registries() -> dict:
+    """One shared dict that holds a registry per browser session."""
+    return {}
+
+def _registry() -> dict:
+    """Return the registry for THIS browser session only, creating it if needed."""
+    sid = st.session_state["_session_id"]
+    store = _all_registries()
+    if sid not in store:
+        store[sid] = {
+            "thread":        None,
+            "stop_event":    None,
+            "lock":          threading.Lock(),
+            "photo_context": [""],  # fresh every new browser session
+            "conv_history":  [""],  # fresh every new browser session
+        }
+    return store[sid]
 
 # Configure page
 st.set_page_config(
@@ -241,26 +263,28 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
-    /* Transcript streaming */
-    .transcript-box {
-        background-color: #161616;
-        border-left: 3px solid #4f46e5;
-        padding: 1rem;
-        border-radius: 6px;
-        margin: 1rem 0;
-        color: #c0c0c0;
-        font-size: 0.9rem;
+    /* Subtitle display */
+    .subtitle-display {
+        text-align: center;
+        padding: 0.75rem 1.25rem;
+        background: rgba(0, 0, 0, 0.75);
+        border-radius: 8px;
+        color: #ffffff;
+        font-size: 1.15rem;
+        font-weight: 500;
         line-height: 1.5;
-        min-height: 60px;
+        min-height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0.5rem 0 1rem 0;
+        letter-spacing: 0.01em;
     }
-    
-    .transcription-live {
-        animation: pulse 1s infinite;
-    }
-    
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
+
+    .subtitle-placeholder {
+        color: #555555;
+        font-size: 0.95rem;
+        font-weight: 400;
     }
     
     /* Delete button (back to start) */
@@ -291,6 +315,10 @@ st.markdown("""
 # SESSION STATE INITIALIZATION
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Unique ID for this browser session — used to isolate registry data per tab
+if "_session_id" not in st.session_state:
+    st.session_state["_session_id"] = str(_uuid.uuid4())
+
 if "captured_image" not in st.session_state:
     st.session_state.captured_image = None
     
@@ -299,9 +327,6 @@ if "muted" not in st.session_state:
     
 if "transcript" not in st.session_state:
     st.session_state.transcript = ""
-    
-if "ai_response" not in st.session_state:
-    st.session_state.ai_response = ""
     
 if "selected_language" not in st.session_state:
     st.session_state.selected_language = "en"
@@ -313,59 +338,183 @@ if "live_running" not in st.session_state:
 # LIVE SESSION HELPERS  (real-time mic → API → speaker)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _send_loop(
-    engine: CivicAILive,
-    mic_async_q: asyncio.Queue,
+async def _live_main(
     image_q: queue.Queue,
+    output_q: queue.Queue,
     stop_event: threading.Event,
+    mute_event: threading.Event,
+    speaker_q: queue.Queue,
+    photo_context: list,          # photo_context[0] = latest analysis text
+    conv_history: list,           # conv_history[0] = rolling transcript for context continuity
 ) -> None:
-    """Stream mic audio continuously; also forward any camera image that arrives."""
+    """Opens mic stream, connects to Live API, reconnects on drop."""
+    import sounddevice as sd
+    import time as _time
+
+    loop = asyncio.get_running_loop()
+    mic_async_q: asyncio.Queue = asyncio.Queue()
+
+    def _mic_callback(indata, frames, time_info, status) -> None:
+        if not stop_event.is_set():
+            loop.call_soon_threadsafe(mic_async_q.put_nowait, indata.tobytes())
+
+    # Outer loop: restarts the mic stream if sounddevice fails
     while not stop_event.is_set():
-        # Drain any queued camera image first
-        try:
-            item = image_q.get_nowait()
-            await engine.send_image(item["data"])
-        except queue.Empty:
-            pass
-        # Send next mic chunk
-        try:
-            chunk = mic_async_q.get_nowait()
-            if chunk is None:
-                return
-            await engine.send_audio(chunk)
-        except asyncio.QueueEmpty:
-            await asyncio.sleep(0.02)
+      try:
+        output_q.put("[Mic open — connecting...]")
+        with sd.InputStream(
+            samplerate=MIC_RATE, channels=CHANNELS, dtype=DTYPE,
+            blocksize=MIC_CHUNK, callback=_mic_callback,
+        ):
+          _reconnect_delay = [0.7]  # exponential backoff state; reset on clean connect
+          while not stop_event.is_set():
+            try:
+                async with CivicAILive(
+                    photo_context=photo_context[0],
+                    conv_history=conv_history[0],
+                ) as engine:
+                    output_q.put("[Connected — speak now]")
+                    _reconnect_delay[0] = 0.7  # reset backoff on successful connection
 
+                    ai_speaking = asyncio.Event()
+                    _last_audio: list[float] = [0.0]
+                    _photo_ready = asyncio.Event()
 
-async def _receive_loop(
-    engine: CivicAILive,
-    output_q: queue.Queue,
-    speaker_q: queue.Queue,
-    stop_event: threading.Event,
-) -> None:
-    """Route audio chunks to the speaker queue; push transcription text to output_q."""
-    async for chunk in engine.receive():
-        if stop_event.is_set():
-            break
-        if isinstance(chunk, bytes):
-            speaker_q.put(chunk)
-        elif isinstance(chunk, str) and chunk:
-            output_q.put(chunk)
+                    # Shared drain helper — used by both _send and _recv
+                    def _drain_mic():
+                        while True:
+                            try:
+                                mic_async_q.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
 
+                    async def _send() -> None:
+                        _loop = asyncio.get_running_loop()
 
-async def _live_loop(
-    engine: CivicAILive,
-    mic_async_q: asyncio.Queue,
-    image_q: queue.Queue,
-    output_q: queue.Queue,
-    speaker_q: queue.Queue,
-    stop_event: threading.Event,
-) -> None:
-    async with engine:
-        await asyncio.gather(
-            _send_loop(engine, mic_async_q, image_q, stop_event),
-            _receive_loop(engine, output_q, speaker_q, stop_event),
-        )
+                        while not stop_event.is_set():
+                            # Fallback echo suppression: if turn_complete sentinel was missed
+                            # and 8s have passed since last audio chunk, clear ai_speaking.
+                            if ai_speaking.is_set() and _time.monotonic() - _last_audio[0] > 8.0:
+                                ai_speaking.clear()
+                                _drain_mic()
+
+                            # Reconnect once background photo analysis finishes.
+                            if _photo_ready.is_set():
+                                raise Exception("photo_updated")
+
+                            try:
+                                item = image_q.get_nowait()
+                                output_q.put("[Analyzing photo...]")
+                                # Run analysis in background so audio keeps flowing.
+                                captured_item = item
+                                async def _bg_analyze():
+                                    def _analyze():
+                                        ai = CivicAI()
+                                        ctx = get_context_block()
+                                        return ai.analyze_incident(
+                                            image_bytes=captured_item["data"],
+                                            voice_text="Analyze this violation notice and give every argument to fight it.",
+                                            context_text=ctx if ctx else None,
+                                        )
+                                    try:
+                                        result = await _loop.run_in_executor(None, _analyze)
+                                        photo_context[0] = result
+                                        _photo_ready.set()
+                                    except Exception as e:
+                                        output_q.put(f"[Photo analysis failed: {e}]")
+                                asyncio.create_task(_bg_analyze())
+                            except queue.Empty:
+                                pass
+
+                            # While AI is speaking: drain mic only — sending silence keepalives
+                            # was triggering native-audio VAD and causing barge-in cutoffs.
+                            if ai_speaking.is_set():
+                                _drain_mic()
+                                await asyncio.sleep(0.05)
+                                continue
+
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    mic_async_q.get(), timeout=0.1
+                                )
+                                # Re-check after await — _recv() may have set ai_speaking
+                                # during the wait, making this chunk a barge-in trigger.
+                                if not ai_speaking.is_set():
+                                    await engine.send_audio(chunk)
+                            except asyncio.TimeoutError:
+                                pass
+
+                    async def _recv() -> None:
+                        async for chunk in engine.receive():
+                            if stop_event.is_set():
+                                return
+                            if chunk is None:
+                                # turn_complete: wait for speaker_q to empty, then add a
+                                # hardware-buffer grace period before re-opening the mic.
+                                # Fixed delays are unreliable — long responses need more time.
+                                async def _wait_speaker_drain():
+                                    deadline = _time.monotonic() + 8.0
+                                    while not speaker_q.empty() and _time.monotonic() < deadline:
+                                        await asyncio.sleep(0.05)
+                                    await asyncio.sleep(0.5)  # sounddevice hardware buffer
+                                    ai_speaking.clear()
+                                asyncio.create_task(_wait_speaker_drain())
+                            elif isinstance(chunk, bytes):
+                                ai_speaking.set()
+                                _last_audio[0] = _time.monotonic()
+                                speaker_q.put(chunk)
+                            elif isinstance(chunk, str) and chunk:
+                                output_q.put(chunk)
+                                combined = (conv_history[0] + f"\nAssistant: {chunk}").strip()
+                                conv_history[0] = combined[-8000:]
+
+                    send_t = asyncio.create_task(_send())
+                    recv_t = asyncio.create_task(_recv())
+                    done, pending = await asyncio.wait(
+                        {send_t, recv_t},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, *done, return_exceptions=True)
+                    # Re-raise any exception (e.g. photo_updated, APIError) so the
+                    # outer handler can log it and trigger a proper reconnect.
+                    for t in done:
+                        if not t.cancelled() and t.exception() is not None:
+                            raise t.exception()
+
+            except Exception as exc:
+                if not stop_event.is_set():
+                    is_photo = "photo_updated" in str(exc)
+                    msg = "[Photo ready — reconnecting...]" if is_photo else f"[Reconnecting: {exc}]"
+                    output_q.put(msg)
+                    if not is_photo:
+                        # Advance backoff on real errors (e.g. 1011 resource exhausted)
+                        _reconnect_delay[0] = min(_reconnect_delay[0] * 2, 30.0)
+
+            finally:
+                if not stop_event.is_set():
+                    # Wait for in-flight audio to finish playing before reconnecting.
+                    _drain_start = _time.monotonic()
+                    while not speaker_q.empty() and _time.monotonic() - _drain_start < 5.0:
+                        await asyncio.sleep(0.1)
+                # Force-drain residual chunks to prevent two-voice overlap.
+                while True:
+                    try:
+                        speaker_q.get_nowait()
+                    except queue.Empty:
+                        break
+                if not stop_event.is_set():
+                    await asyncio.sleep(_reconnect_delay[0])
+      except Exception as exc:
+        if not stop_event.is_set():
+            output_q.put(f"[Mic error, retrying: {exc}]")
+            while True:
+                try:
+                    speaker_q.get_nowait()
+                except queue.Empty:
+                    break
+            await asyncio.sleep(2)
 
 
 def _run_live_thread(
@@ -373,23 +522,18 @@ def _run_live_thread(
     output_q: queue.Queue,
     stop_event: threading.Event,
     mute_event: threading.Event,
+    photo_context: list,
+    conv_history: list,
 ) -> None:
     """Owns its own event loop, mic stream, and speaker stream."""
     try:
         import sounddevice as sd
-        import numpy as np
+        import numpy as np  # noqa: F401
     except ImportError:
         output_q.put("[sounddevice not installed — run: pip install sounddevice numpy]")
         return
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    mic_async_q: asyncio.Queue = asyncio.Queue()
     speaker_q: queue.Queue = queue.Queue()
-
-    def _mic_callback(indata: "np.ndarray", frames, time_info, status) -> None:
-        if not stop_event.is_set():
-            loop.call_soon_threadsafe(mic_async_q.put_nowait, indata.tobytes())
 
     def _speaker_worker() -> None:
         try:
@@ -405,23 +549,20 @@ def _run_live_thread(
                             stream.write(chunk)
                     except queue.Empty:
                         pass
-        except Exception:
-            pass
+        except Exception as spk_exc:
+            output_q.put(f"[Speaker error: {spk_exc}]")
 
     spk_thread = threading.Thread(target=_speaker_worker, daemon=True)
     spk_thread.start()
 
-    engine = CivicAILive()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        with sd.InputStream(
-            samplerate=MIC_RATE, channels=CHANNELS, dtype=DTYPE,
-            blocksize=MIC_CHUNK, callback=_mic_callback,
-        ):
-            loop.run_until_complete(
-                _live_loop(engine, mic_async_q, image_q, output_q, speaker_q, stop_event)
-            )
+        loop.run_until_complete(
+            _live_main(image_q, output_q, stop_event, mute_event, speaker_q, photo_context, conv_history)
+        )
     except Exception as exc:
-        output_q.put(f"[session error: {exc}]")
+        output_q.put(f"[Fatal: {exc}]")
     finally:
         stop_event.set()
         speaker_q.put(None)
@@ -430,29 +571,55 @@ def _run_live_thread(
 
 
 def _start_live_session() -> None:
-    image_q: queue.Queue  = queue.Queue()   # camera frames → live engine
-    output_q: queue.Queue = queue.Queue()   # transcription text → UI
-    stop_event  = threading.Event()
-    mute_event  = threading.Event()         # set = muted
-    thread = threading.Thread(
-        target=_run_live_thread,
-        args=(image_q, output_q, stop_event, mute_event),
-        daemon=True,
-    )
-    thread.start()
-    st.session_state.live_running       = True
-    st.session_state.live_input_q       = image_q
-    st.session_state.live_output_q      = output_q
-    st.session_state.live_stop_event    = stop_event
-    st.session_state.live_mute_event    = mute_event
-    st.session_state.live_thread        = thread
-    st.session_state.transcript         = ""
-    st.session_state.live_last_frame_id = None
+    reg = _registry()
+    with reg["lock"]:
+        # Re-check inside lock — concurrent reruns converge here
+        if reg["thread"] and reg["thread"].is_alive():
+            return
+
+        # Stop any lingering thread
+        if reg["stop_event"]:
+            reg["stop_event"].set()
+
+        # Re-use existing lists so analysis and history survive restarts
+        photo_context: list = reg["photo_context"]
+        conv_history: list  = reg["conv_history"]
+
+        image_q: queue.Queue  = queue.Queue()
+        output_q: queue.Queue = queue.Queue()
+        stop_event  = threading.Event()
+        mute_event  = threading.Event()
+        thread = threading.Thread(
+            target=_run_live_thread,
+            args=(image_q, output_q, stop_event, mute_event, photo_context, conv_history),
+            daemon=True,
+        )
+        thread.start()
+
+        reg["thread"]     = thread
+        reg["stop_event"] = stop_event
+
+        st.session_state.live_running       = True
+        st.session_state.live_input_q       = image_q
+        st.session_state.live_output_q      = output_q
+        st.session_state.live_stop_event    = stop_event
+        st.session_state.live_mute_event    = mute_event
+        st.session_state.live_thread        = thread
+        st.session_state.transcript         = ""
+        st.session_state.live_last_frame_id = None
 
 
 def _stop_live_session() -> None:
-    if st.session_state.get("live_stop_event"):
-        st.session_state.live_stop_event.set()
+    reg = _registry()
+    thread = reg.get("thread")
+    if reg.get("stop_event"):
+        reg["stop_event"].set()
+    # Wait up to 3 s for the thread to finish so the session is fully closed
+    # before we return — prevents zombie sessions overlapping with new ones.
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
+    reg["thread"]     = None
+    reg["stop_event"] = None
     st.session_state.live_running = False
     for key in (
         "live_input_q", "live_output_q", "live_stop_event",
@@ -461,21 +628,27 @@ def _stop_live_session() -> None:
         st.session_state.pop(key, None)
 
 
+_SHOW_PREFIXES = ("[Reconnecting", "[Fatal", "[Photo", "[Speaker error", "[Analyzing")
+
 def _drain_output_queue() -> str:
-    """Pull all pending transcription chunks from the output queue."""
+    """Pull AI transcription + notable status messages; skip routine connect/mic lines."""
     output_q: queue.Queue = st.session_state.live_output_q
     new_text = ""
     while True:
         try:
             chunk = output_q.get_nowait()
-            if isinstance(chunk, str):
+            if not isinstance(chunk, str):
+                continue
+            # Keep: regular AI text (no "[") or important status messages
+            if not chunk.startswith("[") or any(chunk.startswith(p) for p in _SHOW_PREFIXES):
                 new_text += chunk
         except queue.Empty:
             break
     return new_text
 
 # ── AUTO-START: open live session the moment this page loads ──────────────────
-if not st.session_state.live_running:
+_reg = _registry()
+if _reg["thread"] is None or not _reg["thread"].is_alive():
     _start_live_session()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -514,73 +687,24 @@ lang_name = LANGUAGE_MAP.get(st.session_state.selected_language, "English")
 st.markdown(f'<span class="language-pill">🌐 {lang_name}</span>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CAMERA BUTTON & IMAGE CAPTURE
+# HIGH-RES CAMERA CAPTURE
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="camera-button-container">', unsafe_allow_html=True)
-col1, col2, col3 = st.columns([1, 1, 1])
-with col2:
-    # Use a custom container for better styling
-    captured = st.camera_input(
-        "📷",
-        key="camera_input",
-        label_visibility="collapsed",
-    )
-st.markdown('</div>', unsafe_allow_html=True)
+captured_data_url = _high_res_camera(key="hrc", default=None)
 
-if captured is not None:
-    frame_id = id(captured)
-    if frame_id != st.session_state.get("live_last_frame_id"):
-        st.session_state.live_last_frame_id = frame_id
-        st.session_state.captured_image = captured.getvalue()
-        # Push image into the live session so the AI can see it
+if captured_data_url is not None:
+    import hashlib
+    # Strip the data URL header and decode base64 → raw JPEG bytes
+    header, b64 = captured_data_url.split(",", 1)
+    img_bytes = _base64.b64decode(b64)
+    img_hash = hashlib.md5(img_bytes).hexdigest()
+    if img_hash != st.session_state.get("live_last_frame_id"):
+        st.session_state.live_last_frame_id = img_hash
+        st.session_state.captured_image = img_bytes
         if st.session_state.live_running:
             st.session_state.live_input_q.put(
-                {"type": "image", "data": st.session_state.captured_image}
+                {"type": "image", "data": img_bytes}
             )
-
-# Display captured image if available
-if st.session_state.captured_image:
-    st.markdown('<div style="text-align: center;">', unsafe_allow_html=True)
-    img = st.image(
-        st.session_state.captured_image,
-        caption="Captured Document",
-        use_container_width=True,
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AI RESPONSE DISPLAY SECTION
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.markdown('<div class="response-label">AI Analysis</div>', unsafe_allow_html=True)
-
-# If we have captured image, analyze it
-if st.session_state.captured_image and not st.session_state.ai_response:
-    with st.spinner("🔍 Analyzing document..."):
-        try:
-            ai = CivicAI()
-            context_text = get_context_block()
-            response = ai.analyze_incident(
-                image_bytes=st.session_state.captured_image,
-                voice_text="Analyze this violation and provide every legal argument to fight this fine.",
-                context_text=context_text if context_text else None,
-            )
-            st.session_state.ai_response = response
-        except Exception as e:
-            st.session_state.ai_response = f"❌ Analysis failed: {str(e)}"
-
-# Display response in styled box
-if st.session_state.ai_response:
-    st.markdown(
-        f'<div class="response-box">{st.session_state.ai_response}</div>',
-        unsafe_allow_html=True
-    )
-else:
-    st.markdown(
-        '<div class="response-box" style="display: flex; align-items: center; justify-content: center; color: #707070;">Capture a document to begin analysis</div>',
-        unsafe_allow_html=True
-    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPT STREAMING SECTION
@@ -589,44 +713,48 @@ else:
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="response-label">Live Transcript</div>', unsafe_allow_html=True)
 
-# ── Status + Stop control ─────────────────────────────────────────────────────
-col1, col2 = st.columns([3, 1])
-with col1:
+@st.fragment(run_every=0.5)
+def _transcript_fragment():
+    # Auto-restart if the background thread died (catches crashes between page reloads)
+    reg = _registry()
+    if st.session_state.live_running and (
+        reg["thread"] is None or not reg["thread"].is_alive()
+    ):
+        _start_live_session()
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        if st.session_state.live_running:
+            st.markdown('<span class="status-badge status-recording">● Listening</span>', unsafe_allow_html=True)
+    with col2:
+        if st.session_state.live_running:
+            if st.button("⏹", key="stop_live", help="Stop session"):
+                _stop_live_session()
+                st.rerun()
+
     if st.session_state.live_running:
-        st.markdown('<span class="status-badge status-recording">● Listening</span>', unsafe_allow_html=True)
-with col2:
-    if st.session_state.live_running:
-        if st.button("⏹", key="stop_live", help="Stop session"):
-            _stop_live_session()
-            st.rerun()
+        new_text = _drain_output_queue()
+        if new_text:
+            combined = (st.session_state.get("transcript", "") + " " + new_text).strip()
+            st.session_state.transcript = combined[-180:]
 
-# ── AI subtitle / transcript display ─────────────────────────────────────────
-if st.session_state.live_running:
-    transcript_container = st.empty()
-
-    new_text = _drain_output_queue()
-    if new_text:
-        st.session_state.transcript = st.session_state.get("transcript", "") + new_text
-
-    if st.session_state.transcript:
-        transcript_container.markdown(
-            f'<div class="transcript-box"><div class="transcription-live">{st.session_state.transcript}</div></div>',
-            unsafe_allow_html=True,
-        )
+        if st.session_state.transcript:
+            st.markdown(
+                f'<div class="subtitle-display">{st.session_state.transcript}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="subtitle-display"><span class="subtitle-placeholder">Listening...</span></div>',
+                unsafe_allow_html=True,
+            )
     else:
-        transcript_container.markdown(
-            '<div class="transcript-box" style="color: #707070;">Listening — speak or take a photo...</div>',
+        st.markdown(
+            '<div class="subtitle-display"><span class="subtitle-placeholder">Session stopped.</span></div>',
             unsafe_allow_html=True,
         )
 
-    # Auto-refresh to pull new transcription chunks
-    time.sleep(0.5)
-    st.rerun()
-else:
-    st.markdown(
-        '<div class="transcript-box" style="color: #707070; border-left-color: #2a2a2a;">Session stopped.</div>',
-        unsafe_allow_html=True,
-    )
+_transcript_fragment()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MUTE BUTTON
@@ -668,7 +796,6 @@ col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
     if st.button("← Back", use_container_width=True, key="back_button"):
         st.session_state.captured_image = None
-        st.session_state.ai_response = ""
         st.session_state.transcript = ""
         if st.session_state.live_running:
             _stop_live_session()

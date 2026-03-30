@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0e0e0e; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 8px; min-height: 380px; }
+
+  #preview {
+    width: 100%;
+    border-radius: 10px;
+    background: #1a1a1a;
+    display: block;
+    max-height: 280px;
+    object-fit: cover;
+  }
+
+  #thumb {
+    display: none;
+    width: 100%;
+    border-radius: 10px;
+    border: 2px solid #4f46e5;
+  }
+
+  canvas { display: none; }
+
+  .btn-row {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  #capture-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #4f46e5;
+    border: none;
+    color: #fff;
+    font-size: 1.8rem;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(79,70,229,0.4);
+    transition: transform 0.15s, background 0.15s;
+  }
+  #capture-btn:hover  { background: #4338ca; transform: scale(1.08); }
+  #capture-btn:active { transform: scale(0.93); }
+  #capture-btn:disabled { background: #333; cursor: not-allowed; transform: none; opacity: 0.5; }
+
+  #retake-btn {
+    display: none;
+    background: #2a2a2a;
+    color: #ccc;
+    border: none;
+    padding: 0.5rem 1.2rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    align-self: center;
+  }
+  #retake-btn:hover { background: #3a3a3a; color: #fff; }
+
+  #status {
+    font-size: 0.72rem;
+    color: #777;
+    text-align: center;
+    margin-top: 6px;
+    min-height: 16px;
+  }
+</style>
+</head>
+<body>
+  <video id="preview" autoplay playsinline muted></video>
+  <img id="thumb" alt="Captured photo" />
+  <canvas id="canvas"></canvas>
+  <div class="btn-row">
+    <button id="capture-btn" disabled>📷</button>
+    <button id="retake-btn">↩ Retake</button>
+  </div>
+  <div id="status">Starting camera…</div>
+
+<script>
+  // ── Streamlit bridge (no CDN needed) ──────────────────────────────────────
+  function stReady()          { parent.postMessage({ isStreamlitMessage:true, type:"streamlit:componentReady", apiVersion:1 }, "*"); }
+  function stValue(val)       { parent.postMessage({ isStreamlitMessage:true, type:"streamlit:setComponentValue", value:val, dataType:"json" }, "*"); }
+  function stHeight(h)        { parent.postMessage({ isStreamlitMessage:true, type:"streamlit:setFrameHeight", height:h }, "*"); }
+  function autoHeight()       { stHeight(document.body.scrollHeight + 16); }
+
+  // ── Elements ───────────────────────────────────────────────────────────────
+  const preview    = document.getElementById('preview');
+  const thumb      = document.getElementById('thumb');
+  const canvas     = document.getElementById('canvas');
+  const captureBtn = document.getElementById('capture-btn');
+  const retakeBtn  = document.getElementById('retake-btn');
+  const status     = document.getElementById('status');
+
+  let activeStream = null;
+
+  // ── Camera start ──────────────────────────────────────────────────────────
+  async function startCamera() {
+    try {
+      activeStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width:  { ideal: 3840, min: 640 },
+          height: { ideal: 2160, min: 480 },
+        }
+      });
+      preview.srcObject = activeStream;
+      await preview.play();
+      const s = activeStream.getVideoTracks()[0].getSettings();
+      status.textContent = `Camera ready — ${s.width}×${s.height}`;
+      captureBtn.disabled = false;
+    } catch (err) {
+      status.textContent = 'Camera error: ' + err.message;
+    }
+    autoHeight();
+  }
+
+  // ── Capture ───────────────────────────────────────────────────────────────
+  captureBtn.addEventListener('click', () => {
+    if (!activeStream) return;
+    const s = activeStream.getVideoTracks()[0].getSettings();
+    canvas.width  = s.width  || preview.videoWidth;
+    canvas.height = s.height || preview.videoHeight;
+    canvas.getContext('2d').drawImage(preview, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+    thumb.src = dataUrl;
+    thumb.style.display = 'block';
+    preview.style.display = 'none';
+    captureBtn.style.display = 'none';
+    retakeBtn.style.display = 'inline-block';
+    status.textContent = `Captured ${canvas.width}×${canvas.height}`;
+
+    stValue(dataUrl);
+    autoHeight();
+  });
+
+  // ── Retake ────────────────────────────────────────────────────────────────
+  retakeBtn.addEventListener('click', () => {
+    thumb.style.display = 'none';
+    preview.style.display = 'block';
+    captureBtn.style.display = 'inline-block';
+    retakeBtn.style.display = 'none';
+    status.textContent = 'Camera ready';
+    stValue(null);
+    autoHeight();
+  });
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  stReady();
+  autoHeight();   // set frame height immediately so iframe isn't invisible
+  startCamera();
+</script>
+</body>
+</html>
