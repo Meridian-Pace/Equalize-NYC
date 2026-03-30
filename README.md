@@ -115,4 +115,4 @@ Built for the NYC Build With AI Hackathon 2026 Hackathon.
 - Eric Kouperman — eric.kouperman@gmail.com
 - Jacqueline Wong — winnie.yun.wong@gmail.com
 - Nyosha Homicil — nyoshahomicil@gmail.com
-- Alexander Westfal — alexcwestfal@gmail.com
+- Alexander Westfal — awemploymentprocess@gmail.com
